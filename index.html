@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Video Kit — Rotating Shape Cutouts</title>
+  <!-- p5.js latest (2.x) -->
+  <script src="https://cdn.jsdelivr.net/npm/p5@2/lib/p5.min.js"></script>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+<script>
+/*
+  Video Kit — draw shapes over your camera; each shape becomes a rotating
+  cutout while the live feed keeps playing.
+
+  Effect: shapes are drawn in order. Each shape snapshots EVERYTHING beneath
+  it (the base video plus every earlier cutout) and rotates that composite
+  inside its own clip. So a new shape incorporates and re-rotates the shapes
+  below it — nesting into compound, recursive kaleidoscopic forms.
+*/
+
+let capture;
+let snap;            // offscreen snapshot of the composite-so-far
+let shapes = [];
+
+let currentTool = 'circle';      // 'square' | 'circle' | 'triangle'
+let isDrawing = false;
+let startX, startY, curX, curY;
+
+const MIN_SIZE = 8;              // ignore accidental tiny drags
+
+// --- Toolbar layout (minimal, utilitarian) ---
+const TB = { x: 16, y: 16, btn: 48, gap: 8 };
+const TOOLS = ['square', 'circle', 'triangle', 'clear'];
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  pixelDensity(1);
+  snap = createGraphics(windowWidth, windowHeight);
+  snap.pixelDensity(1);
+  capture = createCapture(VIDEO);
+  capture.hide();
+  angleMode(RADIANS);
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+  snap.resizeCanvas(windowWidth, windowHeight);
+}
+
+function draw() {
+  background(0);
+  if (!videoReady()) {
+    drawWaiting();
+    drawToolbar();
+    return;
+  }
+
+  // 1. Base live video filling the screen.
+  drawVideoCover();
+
+  // 2. Each shape: a static window with rotating video inside.
+  for (const s of shapes) {
+    s.angle += s.speed;
+    drawShapeCutout(s);
+  }
+
+  // 3. Live drag preview.
+  if (isDrawing) drawPreview();
+
+  // 4. UI on top.
+  drawToolbar();
+  drawHint();
+}
+
+/* ---------------- video drawing ---------------- */
+
+function videoReady() {
+  return capture && capture.width > 0 && capture.height > 0;
+}
+
+// Cover-fit the (mirrored) video to the canvas. Because the image is centered,
+// the horizontal mirror keeps it centered, so the same dx/dy work flipped.
+function videoRect() {
+  const vw = capture.width, vh = capture.height;
+  const s = Math.max(width / vw, height / vh);
+  const dw = vw * s, dh = vh * s;
+  return { dx: (width - dw) / 2, dy: (height - dh) / 2, dw, dh };
+}
+
+function drawVideoCover() {
+  const r = videoRect();
+  push();
+  translate(width, 0);
+  scale(-1, 1); // selfie mirror
+  image(capture, r.dx, r.dy, r.dw, r.dh);
+  pop();
+}
+
+/* ---------------- shapes ---------------- */
+
+function makeShape(type, x, y, w, h) {
+  // normalize bounding box
+  const bx = Math.min(x, x + w), by = Math.min(y, y + h);
+  const bw = Math.abs(w), bh = Math.abs(h);
+  const dir = Math.random() < 0.5 ? -1 : 1;
+  return {
+    type,
+    x: bx, y: by, w: bw, h: bh,
+    angle: 0,
+    speed: dir * (0.004 + Math.random() * 0.016) // ~0.2–1.1 deg/frame
+  };
+}
+
+function shapeCenter(s) {
+  if (s.type === 'triangle') {
+    return { cx: s.x + s.w / 2, cy: s.y + (2 * s.h) / 3 }; // centroid
+  }
+  return { cx: s.x + s.w / 2, cy: s.y + s.h / 2 };
+}
+
+// Build the shape outline as a path on the raw 2D context (screen space).
+function tracePath(ctx, s) {
+  ctx.beginPath();
+  if (s.type === 'square') {
+    ctx.rect(s.x, s.y, s.w, s.h);
+  } else if (s.type === 'circle') {
+    ctx.ellipse(s.x + s.w / 2, s.y + s.h / 2, s.w / 2, s.h / 2, 0, 0, Math.PI * 2);
+  } else { // triangle, apex up
+    ctx.moveTo(s.x + s.w / 2, s.y);
+    ctx.lineTo(s.x + s.w, s.y + s.h);
+    ctx.lineTo(s.x, s.y + s.h);
+    ctx.closePath();
+  }
+}
+
+function drawShapeCutout(s) {
+  const { cx, cy } = shapeCenter(s);
+
+  // Snapshot the composite drawn so far (base video + every earlier cutout).
+  snap.clear();
+  snap.drawingContext.drawImage(drawingContext.canvas, 0, 0, width, height);
+
+  // Rotate the WHOLE cutout — clip window, the snapshot it reveals, and the
+  // outline — as one rigid spinning piece about the shape's center.
+  push();
+  translate(cx, cy);
+  rotate(s.angle);
+  translate(-cx, -cy);
+
+  tracePath(drawingContext, s); // clip path is now in the rotated frame
+  drawingContext.clip();
+
+  // Show the composite-below, rotated — so this shape incorporates the
+  // shapes beneath it, not just the raw video.
+  image(snap, 0, 0, width, height);
+
+  // thin outline so the cutout reads as an object
+  noFill();
+  stroke(255, 235);
+  strokeWeight(1.5);
+  drawOutline(s);
+  pop(); // restores transform AND clip
+}
+
+function drawOutline(s) {
+  if (s.type === 'square') {
+    rect(s.x, s.y, s.w, s.h);
+  } else if (s.type === 'circle') {
+    ellipse(s.x + s.w / 2, s.y + s.h / 2, s.w, s.h);
+  } else {
+    triangle(s.x + s.w / 2, s.y, s.x + s.w, s.y + s.h, s.x, s.y + s.h);
+  }
+}
+
+function drawPreview() {
+  const w = curX - startX, h = curY - startY;
+  const p = makeShape(currentTool, startX, startY, w, h);
+  noFill();
+  stroke(255, 200);
+  strokeWeight(1.5);
+  drawingContext.setLineDash([6, 6]);
+  drawOutline(p);
+  drawingContext.setLineDash([]);
+}
+
+/* ---------------- toolbar ---------------- */
+
+function toolButtonRect(i) {
+  return { x: TB.x, y: TB.y + i * (TB.btn + TB.gap), w: TB.btn, h: TB.btn };
+}
+
+function pointInToolbar(mx, my) {
+  for (let i = 0; i < TOOLS.length; i++) {
+    const b = toolButtonRect(i);
+    if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) return i;
+  }
+  return -1;
+}
+
+function drawToolbar() {
+  textAlign(CENTER, CENTER);
+  for (let i = 0; i < TOOLS.length; i++) {
+    const t = TOOLS[i];
+    const b = toolButtonRect(i);
+    const active = (t === currentTool && t !== 'clear');
+
+    noStroke();
+    fill(active ? 255 : 0, active ? 255 : 0, active ? 255 : 0, active ? 235 : 150);
+    rect(b.x, b.y, b.w, b.h, 4);
+    stroke(255, active ? 0 : 90);
+    strokeWeight(1);
+    noFill();
+    rect(b.x, b.y, b.w, b.h, 4);
+
+    const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+    const ic = active ? color(0) : color(255);
+    stroke(ic); strokeWeight(2); noFill();
+    const r = 11;
+    if (t === 'square') {
+      rectMode(CENTER); rect(cx, cy, r * 2, r * 2, 2); rectMode(CORNER);
+    } else if (t === 'circle') {
+      ellipse(cx, cy, r * 2, r * 2);
+    } else if (t === 'triangle') {
+      triangle(cx, cy - r, cx + r, cy + r, cx - r, cy + r);
+    } else { // clear: trash-like X
+      line(cx - r, cy - r, cx + r, cy + r);
+      line(cx + r, cy - r, cx - r, cy + r);
+    }
+  }
+}
+
+function drawHint() {
+  noStroke();
+  fill(255, 170);
+  textSize(13);
+  textAlign(LEFT, BOTTOM);
+  const n = shapes.length;
+  text('Pick a shape, then drag on the video to cut a rotating window.  Shapes: ' + n,
+       TB.x, height - 14);
+}
+
+function drawWaiting() {
+  noStroke(); fill(255); textSize(16); textAlign(CENTER, CENTER);
+  text('Allow camera access…', width / 2, height / 2);
+}
+
+/* ---------------- input ---------------- */
+
+function mousePressed() {
+  const hit = pointInToolbar(mouseX, mouseY);
+  if (hit !== -1) {
+    const t = TOOLS[hit];
+    if (t === 'clear') shapes = [];
+    else currentTool = t;
+    return false;
+  }
+  isDrawing = true;
+  startX = curX = mouseX;
+  startY = curY = mouseY;
+  return false;
+}
+
+function mouseDragged() {
+  if (isDrawing) { curX = mouseX; curY = mouseY; }
+  return false;
+}
+
+function mouseReleased() {
+  if (!isDrawing) return false;
+  isDrawing = false;
+  const w = curX - startX, h = curY - startY;
+  if (Math.abs(w) >= MIN_SIZE && Math.abs(h) >= MIN_SIZE) {
+    shapes.push(makeShape(currentTool, startX, startY, w, h));
+  }
+  return false;
+}
+
+// Touch passthrough (mobile): mirror mouse handlers, prevent scrolling.
+function touchStarted() { return mousePressed(); }
+function touchMoved()   { return mouseDragged(); }
+function touchEnded()   { return mouseReleased(); }
+
+function keyPressed() {
+  if (key === '1') currentTool = 'square';
+  else if (key === '2') currentTool = 'circle';
+  else if (key === '3') currentTool = 'triangle';
+  else if (key === 'c' || key === 'C') shapes = [];
+  else if (key === 'z' || key === 'Z') shapes.pop();
+}
+</script>
+</body>
+</html>
