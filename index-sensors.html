@@ -250,8 +250,9 @@ function audioSpawn(size) {
   const w = size * (0.8 + Math.random() * 0.4);
   const h = size * (0.8 + Math.random() * 0.4);
   const c = tiltCursor();
-  const x = lerp(c.x, hotspot.x, CFG.blend);
-  const y = lerp(c.y, hotspot.y, CFG.blend);
+  const b = hotspotReady ? CFG.blend : 0;   // tilt-only until first camera scan
+  const x = lerp(c.x, hotspot.x, b);
+  const y = lerp(c.y, hotspot.y, b);
   spawnShape(x, y, w, h);
 }
 
@@ -290,6 +291,7 @@ function tiltCursor() {
 /* ---------------- camera hotspot ---------------- */
 let hotBuf = null;                       // tiny offscreen for downsampled video
 let hotspot = { x: 0, y: 0 };            // screen-space brightest/most-saturated cell
+let hotspotReady = false;             // true after the first successful scan
 
 function scanHotspot() {
   if (!videoReady()) return;
@@ -309,11 +311,17 @@ function scanHotspot() {
       if (score > best) { best = score; bx = gx; by = gy; }
     }
   }
-  // Map grid cell -> screen px (mirror x for the front camera to match drawVideoCover).
-  let nx = (bx + 0.5) / CFG.hotGridW;
-  if (facing === 'user') nx = 1 - nx;
-  hotspot.x = nx * width;
-  hotspot.y = ((by + 0.5) / CFG.hotGridH) * height;
+  // Map the chosen cell through the SAME cover-fit transform drawVideoCover uses,
+  // so the hotspot lands where that camera content is actually visible on screen.
+  const r = videoRect();
+  const u = (bx + 0.5) / CFG.hotGridW;     // 0..1 across the full capture frame
+  const v = (by + 0.5) / CFG.hotGridH;
+  let sx = r.dx + u * r.dw;
+  const sy = r.dy + v * r.dh;
+  if (facing === 'user') sx = width - sx;  // selfie mirror, matches drawVideoCover
+  hotspot.x = constrain(sx, 0, width);
+  hotspot.y = constrain(sy, 0, height);
+  hotspotReady = true;
 }
 
 /* ---------------- hud ---------------- */
