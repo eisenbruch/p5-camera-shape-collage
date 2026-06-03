@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Sensor Kit — Phone Generative Cutouts</title>
+  <script src="https://cdn.jsdelivr.net/npm/p5@2/lib/p5.min.js"></script>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+<script>
+/*
+  Sensor Kit — a hands-free phone variant of the camera-shape-collage sketch.
+  After one start tap (for camera/mic/motion permissions) shapes spawn on their
+  own: a mic onset spawns a rotating video cutout, its loudness sets the size,
+  device tilt blended with the brightest camera region sets the position, spin is
+  constant random per shape (unchanged from index.html), and a hard shake clears
+  the canvas. Shapes accumulate forever.
+*/
+
+/* ---------------- tunable config ---------------- */
+const CFG = {
+  cooldownMs: 250,      // min gap between audio-triggered spawns
+  riseFactor: 1.8,      // loudness must exceed baseline * this to fire
+  loudFloor: 0.02,      // ignore loudness below this (silence noise)
+  quiet: 0.03, loud: 0.30,        // loudness range mapped to size
+  minSize: 60, maxSize: 360,      // shape size range (px)
+  tiltSmooth: 0.15,     // low-pass factor for tilt cursor (0..1, higher = snappier)
+  tiltRange: 35,        // degrees of tilt that span half the screen
+  blend: 0.5,           // 0 = pure tilt cursor, 1 = pure camera hotspot
+  hotspotEveryN: 10,    // frames between camera-hotspot scans
+  hotGridW: 32, hotGridH: 18,     // hotspot downsample grid
+  shakeThreshold: 28,   // accel magnitude (m/s^2) to trigger clear
+  shakeCooldownMs: 1200,
+  vibrateSpawn: 15, vibrateClear: [40, 60, 40]
+};
+
+/* ---------------- state ---------------- */
+let appState = 'idle';     // 'idle' (start screen) | 'running'
+let facing = 'user';       // 'user' (front) | 'environment' (rear)
+let capture = null;
+let snap = null;           // offscreen snapshot of the composite-so-far
+let shapes = [];
+let startBtn = null, frontBtn = null, rearBtn = null;
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  pixelDensity(1);
+  snap = createGraphics(windowWidth, windowHeight);
+  snap.pixelDensity(1);
+  angleMode(RADIANS);
+  noStroke();
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+  snap.resizeCanvas(windowWidth, windowHeight);
+}
+
+function draw() {
+  background(0);
+  if (appState === 'idle') { drawStartScreen(); return; }
+  if (!videoReady()) { drawWaiting(); return; }
+
+  drawVideoCover();
+  for (const s of shapes) { s.angle += s.speed; drawShapeCutout(s); }
+  drawHud();
+}
+
+/* ---------------- start screen ---------------- */
+
+function drawStartScreen() {
+  textAlign(CENTER, CENTER);
+  fill(255); textSize(min(width, height) * 0.07);
+  text('Tap to start', width / 2, height * 0.4);
+
+  // Front / Rear selector
+  const bw = min(width * 0.34, 200), bh = 56, gap = 16;
+  const cy = height * 0.58;
+  frontBtn = { x: width / 2 - bw - gap / 2, y: cy, w: bw, h: bh };
+  rearBtn  = { x: width / 2 + gap / 2,      y: cy, w: bw, h: bh };
+  startBtn = { x: 0, y: 0, w: width, h: height }; // whole screen starts it
+
+  drawToggle(frontBtn, 'Front', facing === 'user');
+  drawToggle(rearBtn, 'Rear', facing === 'environment');
+
+  fill(255, 150); textSize(13);
+  text('camera + mic + motion permission needed', width / 2, height * 0.7);
+}
+
+function drawToggle(b, label, on) {
+  push();
+  stroke(255, on ? 255 : 90); strokeWeight(1.5);
+  fill(on ? color(255, 235) : color(0, 0, 0, 120));
+  rect(b.x, b.y, b.w, b.h, 6);
+  noStroke(); fill(on ? 0 : 255); textSize(16);
+  text(label, b.x + b.w / 2, b.y + b.h / 2);
+  pop();
+}
+
+function hit(b, x, y) { return b && x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h; }
+
+function handleStartTap(x, y) {
+  if (hit(frontBtn, x, y)) { facing = 'user'; return; }
+  if (hit(rearBtn, x, y))  { facing = 'environment'; return; }
+  beginRun();
+}
+
+function beginRun() {
+  appState = 'running';
+  capture = createCapture({ video: { facingMode: facing }, audio: false }, () => {});
+  capture.hide();
+  // Audio, orientation, motion permissions/start are wired in later tasks.
+}
+
+/* ---------------- input (start tap only) ---------------- */
+
+function mousePressed() {
+  if (appState === 'idle') handleStartTap(mouseX, mouseY);
+  return false;
+}
+function touchStarted() { return mousePressed(); }
+
+// Debug: 's' force-spawns a centered shape for desktop testing without sensors.
+function keyPressed() {
+  if (key === 's' || key === 'S') spawnShape(width / 2, height / 2, 160, 160, 'circle');
+}
+
+/* ---------------- rendering core (copied unchanged from index.html) ---------------- */
+
+function videoReady() { return capture && capture.width > 0 && capture.height > 0; }
+
+function videoRect() {
+  const vw = capture.width, vh = capture.height;
+  const s = Math.max(width / vw, height / vh);
+  const dw = vw * s, dh = vh * s;
+  return { dx: (width - dw) / 2, dy: (height - dh) / 2, dw, dh };
+}
+
+function drawVideoCover() {
+  const r = videoRect();
+  push();
+  if (facing === 'user') { translate(width, 0); scale(-1, 1); } // selfie mirror
+  image(capture, r.dx, r.dy, r.dw, r.dh);
+  pop();
+}
+
+function makeShape(type, x, y, w, h) {
+  const bx = Math.min(x, x + w), by = Math.min(y, y + h);
+  const bw = Math.abs(w), bh = Math.abs(h);
+  const dir = Math.random() < 0.5 ? -1 : 1;
+  return { type, x: bx, y: by, w: bw, h: bh, angle: 0,
+           speed: dir * (0.004 + Math.random() * 0.016) };
+}
+
+function shapeCenter(s) {
+  if (s.type === 'triangle') return { cx: s.x + s.w / 2, cy: s.y + (2 * s.h) / 3 };
+  return { cx: s.x + s.w / 2, cy: s.y + s.h / 2 };
+}
+
+function tracePath(ctx, s) {
+  ctx.beginPath();
+  if (s.type === 'square') {
+    ctx.rect(s.x, s.y, s.w, s.h);
+  } else if (s.type === 'circle') {
+    ctx.ellipse(s.x + s.w / 2, s.y + s.h / 2, s.w / 2, s.h / 2, 0, 0, Math.PI * 2);
+  } else {
+    ctx.moveTo(s.x + s.w / 2, s.y);
+    ctx.lineTo(s.x + s.w, s.y + s.h);
+    ctx.lineTo(s.x, s.y + s.h);
+    ctx.closePath();
+  }
+}
+
+function drawShapeCutout(s) {
+  const { cx, cy } = shapeCenter(s);
+  snap.clear();
+  snap.drawingContext.drawImage(drawingContext.canvas, 0, 0, width, height);
+  push();
+  translate(cx, cy); rotate(s.angle); translate(-cx, -cy);
+  tracePath(drawingContext, s);
+  drawingContext.clip();
+  image(snap, 0, 0, width, height);
+  pop();
+}
+
+/* ---------------- spawn (sensor wiring added in later tasks) ---------------- */
+
+const TYPES = ['square', 'circle', 'triangle'];
+function spawnShape(x, y, w, h, type) {
+  const t = type || TYPES[Math.floor(Math.random() * TYPES.length)];
+  shapes.push(makeShape(t, x - w / 2, y - h / 2, w, h));
+  if (navigator.vibrate) navigator.vibrate(CFG.vibrateSpawn);
+}
+
+/* ---------------- hud ---------------- */
+
+function drawHud() {
+  fill(255, 150); textSize(13); textAlign(LEFT, BOTTOM);
+  text('shapes: ' + shapes.length, 14, height - 12);
+}
+
+function drawWaiting() {
+  fill(255); textSize(16); textAlign(CENTER, CENTER);
+  text('Allow camera access…', width / 2, height / 2);
+}
+</script>
+</body>
+</html>
