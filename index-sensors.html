@@ -44,7 +44,7 @@ let facing = 'user';       // 'user' (front) | 'environment' (rear)
 let capture = null;
 let snap = null;           // offscreen snapshot of the composite-so-far
 let shapes = [];
-let startBtn = null, frontBtn = null, rearBtn = null;
+let frontBtn = null, rearBtn = null;
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
@@ -65,6 +65,7 @@ function draw() {
   if (appState === 'idle') { drawStartScreen(); return; }
   if (!videoReady()) { drawWaiting(); return; }
 
+  pollAudio(millis());
   drawVideoCover();
   for (const s of shapes) { s.angle += s.speed; drawShapeCutout(s); }
   drawHud();
@@ -82,7 +83,6 @@ function drawStartScreen() {
   const cy = height * 0.58;
   frontBtn = { x: width / 2 - bw - gap / 2, y: cy, w: bw, h: bh };
   rearBtn  = { x: width / 2 + gap / 2,      y: cy, w: bw, h: bh };
-  startBtn = { x: 0, y: 0, w: width, h: height }; // whole screen starts it
 
   drawToggle(frontBtn, 'Front', facing === 'user');
   drawToggle(rearBtn, 'Rear', facing === 'environment');
@@ -113,6 +113,7 @@ function beginRun() {
   appState = 'running';
   capture = createCapture({ video: { facingMode: facing }, audio: false }, () => {});
   capture.hide();
+  startAudio();
   // Audio, orientation, motion permissions/start are wired in later tasks.
 }
 
@@ -127,6 +128,7 @@ function touchStarted() { return mousePressed(); }
 // Debug: 's' force-spawns a centered shape for desktop testing without sensors.
 function keyPressed() {
   if (key === 's' || key === 'S') spawnShape(width / 2, height / 2, 160, 160, 'circle');
+  if (key === 'a' || key === 'A') audioSpawn(loudnessToSize(0.2));
 }
 
 /* ---------------- rendering core (copied unchanged from index.html) ---------------- */
@@ -194,6 +196,59 @@ function spawnShape(x, y, w, h, type) {
   const t = type || TYPES[Math.floor(Math.random() * TYPES.length)];
   shapes.push(makeShape(t, x - w / 2, y - h / 2, w, h));
   if (navigator.vibrate) navigator.vibrate(CFG.vibrateSpawn);
+}
+
+/* ---------------- audio onset ---------------- */
+let audioCtx = null, analyser = null, audioBuf = null;
+let loudBaseline = 0;          // slow-moving average of loudness
+let lastSpawnMs = -1e9;
+
+async function startAudio() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    const src = audioCtx.createMediaStreamSource(stream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 1024;
+    src.connect(analyser);
+    audioBuf = new Float32Array(analyser.fftSize);
+  } catch (e) { /* mic denied: audio trigger simply never fires */ }
+}
+
+// RMS loudness of the current time-domain buffer, 0..~1.
+function currentLoudness() {
+  if (!analyser) return 0;
+  analyser.getFloatTimeDomainData(audioBuf);
+  let sum = 0;
+  for (let i = 0; i < audioBuf.length; i++) sum += audioBuf[i] * audioBuf[i];
+  return Math.sqrt(sum / audioBuf.length);
+}
+
+// Called once per frame; fires a spawn on an onset.
+function pollAudio(nowMs) {
+  const l = currentLoudness();
+  loudBaseline = loudBaseline * 0.95 + l * 0.05;          // adaptive baseline
+  const isOnset = l > CFG.loudFloor &&
+                  l > loudBaseline * CFG.riseFactor &&
+                  (nowMs - lastSpawnMs) > CFG.cooldownMs;
+  if (isOnset) {
+    lastSpawnMs = nowMs;
+    const size = loudnessToSize(l);
+    audioSpawn(size);
+  }
+}
+
+function loudnessToSize(l) {
+  const t = constrain((l - CFG.quiet) / (CFG.loud - CFG.quiet), 0, 1);
+  return CFG.minSize + t * (CFG.maxSize - CFG.minSize);
+}
+
+// Position picker is added in Task 3; until then spawn near center.
+function audioSpawn(size) {
+  const w = size * (0.8 + Math.random() * 0.4);
+  const h = size * (0.8 + Math.random() * 0.4);
+  spawnShape(width / 2, height / 2, w, h);
 }
 
 /* ---------------- hud ---------------- */
