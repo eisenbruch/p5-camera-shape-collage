@@ -239,6 +239,9 @@ function currentLoudness() {
 
 // Called once per frame; fires a spawn on an onset.
 function pollAudio(nowMs) {
+  // Mobile browsers auto-suspend the AudioContext when backgrounded/locked;
+  // nudge it back so the mic keeps working after the phone wakes.
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
   const l = currentLoudness();
   loudBaseline = loudBaseline * 0.95 + l * 0.05;          // adaptive baseline
   const isOnset = l > CFG.loudFloor &&
