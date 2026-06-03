@@ -115,6 +115,25 @@ tilt smoothing factor and sensitivity, `BLEND`, hotspot grid size and scan caden
 `SHAKE_THRESHOLD`, vibrate durations. Grouped so behavior can be tuned without
 hunting through the code.
 
+## Addendum — p5-phone conformance (minimal)
+
+Per the p5-phone skill (https://npuckett.github.io/p5-phone/), the sketch adopts
+the framework's phone-readiness baseline at a **minimal** level (user's choice):
+include the p5-phone script set and call `lockGestures()` in `setup()` to stop the
+browser hijacking taps/scroll/zoom. The custom Front/Rear start screen and our
+hand-rolled getUserMedia camera+mic, Web Audio loudness, and
+deviceorientation/devicemotion listeners are **kept** — our permission-on-tap flow
+already matches the skill's iOS-safe "request from a user gesture" rule, so the
+library's tap overlay and p5.AudioIn/createPhoneCamera APIs are not adopted.
+
+Scripts added (replacing the bare `p5@2` tag):
+- `p5@2.2.3/lib/p5.min.js`
+- `p5.js-compatibility@0.2.0/src/preload.js`
+- `p5-phone@1.10.0/dist/p5-phone.min.js`
+
+`lockGestures()` is called defensively (`if (typeof lockGestures === 'function')`).
+`p5.sound` is NOT included — the mic stays on the existing Web Audio analyser.
+
 ## Open Risks
 
 - Audio onset thresholds and tilt sensitivity will need on-device tuning; the
