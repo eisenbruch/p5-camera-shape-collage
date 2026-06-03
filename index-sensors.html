@@ -66,6 +66,7 @@ function draw() {
   if (!videoReady()) { drawWaiting(); return; }
 
   pollAudio(millis());
+  if (frameCount % CFG.hotspotEveryN === 0) scanHotspot();
   drawVideoCover();
   for (const s of shapes) { s.angle += s.speed; drawShapeCutout(s); }
   drawHud();
@@ -114,6 +115,7 @@ function beginRun() {
   capture = createCapture({ video: { facingMode: facing }, audio: false }, () => {});
   capture.hide();
   startAudio();
+  startOrientation();
   // Audio, orientation, motion permissions/start are wired in later tasks.
 }
 
@@ -244,11 +246,74 @@ function loudnessToSize(l) {
   return CFG.minSize + t * (CFG.maxSize - CFG.minSize);
 }
 
-// Position picker is added in Task 3; until then spawn near center.
 function audioSpawn(size) {
   const w = size * (0.8 + Math.random() * 0.4);
   const h = size * (0.8 + Math.random() * 0.4);
-  spawnShape(width / 2, height / 2, w, h);
+  const c = tiltCursor();
+  const x = lerp(c.x, hotspot.x, CFG.blend);
+  const y = lerp(c.y, hotspot.y, CFG.blend);
+  spawnShape(x, y, w, h);
+}
+
+/* ---------------- orientation / tilt cursor ---------------- */
+let neutralBeta = null, neutralGamma = null;   // captured at first reading
+let rawBeta = 0, rawGamma = 0;
+let tiltX = null, tiltY = null;                // smoothed cursor (screen px)
+
+function onOrientation(e) {
+  if (e.beta == null || e.gamma == null) return;
+  if (neutralBeta == null) { neutralBeta = e.beta; neutralGamma = e.gamma; }
+  rawBeta = e.beta; rawGamma = e.gamma;
+}
+
+function startOrientation() {
+  const add = () => window.addEventListener('deviceorientation', onOrientation, true);
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    DeviceOrientationEvent.requestPermission().then(r => { if (r === 'granted') add(); }).catch(() => {});
+  } else { add(); }
+}
+
+// Smoothed tilt cursor in screen space; defaults to center until sensor data arrives.
+function tiltCursor() {
+  if (neutralBeta == null) return { x: width / 2, y: height / 2 };
+  const dgx = constrain((rawGamma - neutralGamma) / CFG.tiltRange, -1, 1);
+  const dgy = constrain((rawBeta  - neutralBeta)  / CFG.tiltRange, -1, 1);
+  const targetX = width / 2 + dgx * (width / 2) * 0.9;
+  const targetY = height / 2 + dgy * (height / 2) * 0.9;
+  if (tiltX == null) { tiltX = targetX; tiltY = targetY; }
+  tiltX += (targetX - tiltX) * CFG.tiltSmooth;
+  tiltY += (targetY - tiltY) * CFG.tiltSmooth;
+  return { x: tiltX, y: tiltY };
+}
+
+/* ---------------- camera hotspot ---------------- */
+let hotBuf = null;                       // tiny offscreen for downsampled video
+let hotspot = { x: 0, y: 0 };            // screen-space brightest/most-saturated cell
+
+function scanHotspot() {
+  if (!videoReady()) return;
+  if (!hotBuf) { hotBuf = createGraphics(CFG.hotGridW, CFG.hotGridH); hotBuf.pixelDensity(1); }
+  hotBuf.clear();
+  hotBuf.image(capture, 0, 0, CFG.hotGridW, CFG.hotGridH);
+  hotBuf.loadPixels();
+  let best = -1, bx = CFG.hotGridW / 2, by = CFG.hotGridH / 2;
+  const px = hotBuf.pixels;
+  for (let gy = 0; gy < CFG.hotGridH; gy++) {
+    for (let gx = 0; gx < CFG.hotGridW; gx++) {
+      const i = 4 * (gy * CFG.hotGridW + gx);
+      const r = px[i], g = px[i + 1], b = px[i + 2];
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+      const sat = mx === 0 ? 0 : (mx - mn) / mx;
+      const score = mx * (0.5 + sat);     // bright AND colorful
+      if (score > best) { best = score; bx = gx; by = gy; }
+    }
+  }
+  // Map grid cell -> screen px (mirror x for the front camera to match drawVideoCover).
+  let nx = (bx + 0.5) / CFG.hotGridW;
+  if (facing === 'user') nx = 1 - nx;
+  hotspot.x = nx * width;
+  hotspot.y = ((by + 0.5) / CFG.hotGridH) * height;
 }
 
 /* ---------------- hud ---------------- */
