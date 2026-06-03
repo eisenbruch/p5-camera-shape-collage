@@ -102,12 +102,16 @@ function draw() {
   // 1. Base live video.
   drawVideoCover();
 
-  // 2. Shapes, in creation order.
-  for (const s of shapes) {
-    s.angle += s.speed;
-    if (s.attached) drawAttachedShape(s);
-    else drawShapeCutout(s);
-  }
+  // 2. Advance spin for every shape.
+  for (const s of shapes) s.angle += s.speed;
+
+  // Draw free cutouts first, then face-attached shapes ON TOP. A free shape
+  // re-rotates whatever is beneath it, so if it were drawn over a face shape
+  // (e.g. a big circle AROUND the head) it would spin the face shapes the
+  // wrong way. Keeping attached shapes last leaves them glued to the face
+  // regardless of stacking order.
+  for (const s of shapes) if (!s.attached) drawShapeCutout(s);
+  for (const s of shapes) if (s.attached) drawAttachedShape(s);
 
   // 3. Drag preview.
   if (isDrawing) drawPreview();
@@ -208,11 +212,6 @@ function drawShapeCutout(s) {
   tracePath(drawingContext, s);
   drawingContext.clip();
   image(snap, 0, 0, width, height);
-
-  noFill();
-  stroke(255, 235);
-  strokeWeight(1.5);
-  drawOutline(s);
   pop();
 }
 
@@ -361,34 +360,32 @@ function drawAttachedShape(s) {
   translate(-cx, -cy);
   image(snap, 0, 0, width, height);
   pop();
-
-  // Warped outline (follows the face; not spun).
-  noFill();
-  stroke(0, 255, 200, 235);
-  strokeWeight(1.5);
-  beginShape();
-  for (const p of poly) vertex(p.x, p.y);
-  endShape(CLOSE);
 }
 
 /* ---------------- face detection helpers ---------------- */
 
-function faceUnderPoint(x, y) {
-  let best = null, bd = Infinity;
+// True if point p lies inside any triangle of the face mesh.
+function pointInMesh(p, L, tris) {
+  for (const t of tris) {
+    const b = bary(p, L[t[0]], L[t[1]], L[t[2]]);
+    if (b && b[0] >= -0.001 && b[1] >= -0.001 && b[2] >= -0.001) return true;
+  }
+  return false;
+}
+
+// A shape attaches only if at least one of its outline points actually lands
+// ON the face mesh — so a big shape drawn AROUND the head does not attach.
+function faceTouchedByOutline(s) {
+  const tris = meshTriangles();
+  if (!tris.length) return null;
+  const poly = outlinePolygon(s);
   for (const f of faces) {
     const L = f._screen || faceScreen(f);
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const p of L) {
-      minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
-      maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
-    }
-    if (x >= minX && x <= maxX && y >= minY && y <= maxY) {
-      const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
-      const d = (cx - x) ** 2 + (cy - y) ** 2;
-      if (d < bd) { bd = d; best = f; }
+    for (const p of poly) {
+      if (pointInMesh(p, L, tris)) return f;
     }
   }
-  return best;
+  return null;
 }
 
 function drawFaceGuide() {
@@ -505,8 +502,7 @@ function mouseReleased() {
 
   const s = makeShape(currentTool, startX, startY, w, h);
   if (faceMode) {
-    const c = shapeCenter(s);
-    const f = faceUnderPoint(c.cx, c.cy);
+    const f = faceTouchedByOutline(s);
     if (f) attachShapeToFace(s, f);
   }
   shapes.push(s);

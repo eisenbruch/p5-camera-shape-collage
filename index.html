@@ -158,12 +158,6 @@ function drawShapeCutout(s) {
   // Show the composite-below, rotated — so this shape incorporates the
   // shapes beneath it, not just the raw video.
   image(snap, 0, 0, width, height);
-
-  // thin outline so the cutout reads as an object
-  noFill();
-  stroke(255, 235);
-  strokeWeight(1.5);
-  drawOutline(s);
   pop(); // restores transform AND clip
 }
 
