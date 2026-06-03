@@ -4,7 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Sensor Kit — Phone Generative Cutouts</title>
-  <script src="https://cdn.jsdelivr.net/npm/p5@2/lib/p5.min.js"></script>
+  <!-- p5.js (pinned) + p5-phone framework -->
+  <script src="https://cdn.jsdelivr.net/npm/p5@2.2.3/lib/p5.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/p5.js-compatibility@0.2.0/src/preload.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/p5-phone@1.10.0/dist/p5-phone.min.js"></script>
   <style>
     html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
     canvas { display: block; }
@@ -58,6 +61,7 @@ function setup() {
   snap.pixelDensity(1);
   angleMode(RADIANS);
   noStroke();
+  if (typeof lockGestures === 'function') lockGestures();
 }
 
 function windowResized() {
