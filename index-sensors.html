@@ -116,6 +116,7 @@ function beginRun() {
   capture.hide();
   startAudio();
   startOrientation();
+  startMotion();
   // Audio, orientation, motion permissions/start are wired in later tasks.
 }
 
@@ -322,6 +323,29 @@ function scanHotspot() {
   hotspot.x = constrain(sx, 0, width);
   hotspot.y = constrain(sy, 0, height);
   hotspotReady = true;
+}
+
+/* ---------------- motion / shake-to-clear ---------------- */
+let lastShakeMs = -1e9;
+
+function onMotion(e) {
+  const a = e.accelerationIncludingGravity || e.acceleration;
+  if (!a) return;
+  const mag = Math.sqrt((a.x || 0) ** 2 + (a.y || 0) ** 2 + (a.z || 0) ** 2);
+  const nowMs = millis();
+  if (mag > CFG.shakeThreshold && (nowMs - lastShakeMs) > CFG.shakeCooldownMs) {
+    lastShakeMs = nowMs;
+    shapes = [];
+    if (navigator.vibrate) navigator.vibrate(CFG.vibrateClear);
+  }
+}
+
+function startMotion() {
+  const add = () => window.addEventListener('devicemotion', onMotion, true);
+  if (typeof DeviceMotionEvent !== 'undefined' &&
+      typeof DeviceMotionEvent.requestPermission === 'function') {
+    DeviceMotionEvent.requestPermission().then(r => { if (r === 'granted') add(); }).catch(() => {});
+  } else { add(); }
 }
 
 /* ---------------- hud ---------------- */
