@@ -19,6 +19,11 @@
   device tilt blended with the brightest camera region sets the position, spin is
   constant random per shape (unchanged from index.html), and a hard shake clears
   the canvas. Shapes accumulate forever.
+
+  Run on phone: from the project dir start a static server
+  (python3 -m http.server 8000), expose it with `ngrok http 8000`, then open the
+  https URL ngrok prints on the phone. Camera + mic + motion require this HTTPS
+  context; a plain file:// will not grant them.
 */
 
 /* ---------------- tunable config ---------------- */
@@ -353,6 +358,10 @@ function startMotion() {
 function drawHud() {
   fill(255, 150); textSize(13); textAlign(LEFT, BOTTOM);
   text('shapes: ' + shapes.length, 14, height - 12);
+  if (shapes.length === 0) {
+    textAlign(CENTER, CENTER); fill(255, 120);
+    text('make a sound to draw • tilt to aim • shake to clear', width / 2, height - 24);
+  }
 }
 
 function drawWaiting() {
