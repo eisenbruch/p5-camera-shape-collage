@@ -62,10 +62,10 @@ const SLIT_STEP   = 3;    // frames between captured layers (temporal spacing)
 const SLIT_RING   = 5;    // px added to the disk radius per older time ring
 const SLIT_RES    = 0.5;  // buffer resolution scale (lower = faster, softer)
 
-// --- Pixel-sort (streaks emanating from shapes/eyes) tuning ---
-const PIXEL_RES = 0.5;    // pixel-sort buffer resolution (lower = faster)
-const PIX_SPAN  = 2.5;    // streak length as a multiple of a shape's size
-const PIX_BAND  = 0.55;   // streak thickness as a multiple of a shape's size
+// --- Pixel-sort (organic streaks radiating from shapes/eyes) tuning ---
+const PIX_REACH    = 1.6;  // streak reach outward, as a multiple of shape size
+const PIX_RAY_GAP  = 4;    // px between rays around a shape (smaller = denser)
+const PIX_MAX_RAYS = 240;  // cap on rays per shape (perf)
 
 // --- Toolbar layout (minimal, utilitarian) ---
 const TB = { x: 16, y: 16, btn: 48, gap: 8 };
@@ -553,16 +553,6 @@ function drawRadialRings(anchors, reverse) {
 
 /* ---------------- pixel sort: streaks from shapes/eyes ---------------- */
 
-let pixBuf = null;   // downscaled work buffer for the pixel sort
-
-function ensurePixBuf() {
-  const w = Math.max(2, Math.round(width * PIXEL_RES));
-  const h = Math.max(2, Math.round(height * PIXEL_RES));
-  if (pixBuf && pixBuf.width === w && pixBuf.height === h) return;
-  pixBuf = createGraphics(w, h);
-  pixBuf.pixelDensity(1);
-}
-
 // Sort a run of pixels (given as RGBA base offsets) by brightness, in place.
 function sortSpan(px, idxs) {
   const arr = idxs.map(i => [px[i] + px[i + 1] + px[i + 2], px[i], px[i + 1], px[i + 2], px[i + 3]]);
@@ -573,58 +563,37 @@ function sortSpan(px, idxs) {
   }
 }
 
-// Clip the canvas to the union of each anchor's horizontal + vertical streak
-// rectangles, so sorted pixels only appear in those crosses (never the whole frame).
-function clipToStreaks(ctx, anchors) {
-  ctx.beginPath();
-  for (const a of anchors) {
-    const sz = Math.max(8, a.r);
-    const span = sz * PIX_SPAN, band = sz * PIX_BAND;
-    ctx.rect(a.x - span / 2, a.y - band / 2, span, band);   // horizontal streak
-    ctx.rect(a.x - band / 2, a.y - span / 2, band, span);   // vertical streak
-  }
-  ctx.clip();
-}
-
-// Build a per-anchor cross of brightness-sorted streaks from the current base,
-// then composite it back only within those crosses. Recomputed every frame, so
-// the streaks track the shapes/eyes and shimmer as the video changes.
+// Pixel-sort along rays that fan OUTWARD from each shape/eye, starting at the
+// shape's edge (never inside it). Each ray's reach is perturbed by noise so the
+// streaks read as organic tendrils rather than bars, and they shimmer over time.
+// Done in place at full resolution, before the shapes are drawn on top.
 function drawPixelSort(anchors) {
   if (!anchors || !anchors.length) return;
-  ensurePixBuf();
-  const sc = PIXEL_RES, W = pixBuf.width, H = pixBuf.height;
-  pixBuf.clear();
-  pixBuf.drawingContext.drawImage(drawingContext.canvas, 0, 0, W, H);
-  pixBuf.loadPixels();
-  const px = pixBuf.pixels;
-
-  for (const a of anchors) {
-    const ax = a.x * sc, ay = a.y * sc, sz = Math.max(4, a.r * sc);
-    const span = sz * PIX_SPAN, band = sz * PIX_BAND;
-
-    // horizontal streak: sort each row across the span
-    let x0 = Math.max(0, Math.round(ax - span / 2)), x1 = Math.min(W - 1, Math.round(ax + span / 2));
-    let y0 = Math.max(0, Math.round(ay - band / 2)), y1 = Math.min(H - 1, Math.round(ay + band / 2));
-    for (let y = y0; y <= y1; y++) {
+  loadPixels();                          // main canvas, pixelDensity(1)
+  const W = width, H = height, px = pixels;
+  const t = frameCount * 0.012;
+  for (let ai = 0; ai < anchors.length; ai++) {
+    const a = anchors[ai];
+    const ax = a.x, ay = a.y;
+    const ri = Math.max(4, a.r * 0.5);                 // start at the shape edge
+    const reachMax = a.r * PIX_REACH;
+    const circ = 2 * Math.PI * (ri + reachMax * 0.4);
+    const rays = Math.min(PIX_MAX_RAYS, Math.max(40, Math.round(circ / PIX_RAY_GAP)));
+    for (let s = 0; s < rays; s++) {
+      const ang = (s / rays) * Math.PI * 2;
+      const cos = Math.cos(ang), sin = Math.sin(ang);
+      const n = noise(ai * 7 + cos * 1.7 + 20, sin * 1.7 + 20, t);
+      const reach = reachMax * (0.15 + n * 1.25);      // organic per-ray length
       const idxs = [];
-      for (let x = x0; x <= x1; x++) idxs.push(4 * (y * W + x));
-      sortSpan(px, idxs);
-    }
-    // vertical streak: sort each column down the span
-    x0 = Math.max(0, Math.round(ax - band / 2)); x1 = Math.min(W - 1, Math.round(ax + band / 2));
-    y0 = Math.max(0, Math.round(ay - span / 2)); y1 = Math.min(H - 1, Math.round(ay + span / 2));
-    for (let x = x0; x <= x1; x++) {
-      const idxs = [];
-      for (let y = y0; y <= y1; y++) idxs.push(4 * (y * W + x));
-      sortSpan(px, idxs);
+      for (let rr = ri; rr <= ri + reach; rr += 1) {
+        const x = (ax + cos * rr) | 0, y = (ay + sin * rr) | 0;
+        if (x < 0 || x >= W || y < 0 || y >= H) break;
+        idxs.push(4 * (y * W + x));
+      }
+      if (idxs.length > 2) sortSpan(px, idxs);
     }
   }
-  pixBuf.updatePixels();
-
-  push();
-  clipToStreaks(drawingContext, anchors);
-  image(pixBuf, 0, 0, width, height);
-  pop();
+  updatePixels();
 }
 
 /* ---------------- face detection helpers ---------------- */
