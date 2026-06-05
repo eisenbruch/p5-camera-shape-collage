@@ -41,8 +41,9 @@ let meshTris = null;      // canonical face triangulation from ml5 (cached)
 let currentTool = 'circle';   // 'square' | 'circle' | 'triangle'
 let faceMode = false;
 let eyeMode = false;          // auto flat rotating squares that follow open eyes
-const eyeSpin = {};           // persistent spin state per face+eye, e.g. eyeSpin['L0']
+let eyeSpin = {};             // per face+eye spin/size state; reset when eye mode toggles
 let slitMode = false;         // radial slit-scan: video time radiates from shapes/eyes
+let slitReverse = false;      // flip radial time direction (oldest at center, newest outward)
 let isDrawing = false;
 let startX, startY, curX, curY;
 
@@ -62,7 +63,7 @@ const SLIT_RES    = 0.5;  // buffer resolution scale (lower = faster, softer)
 
 // --- Toolbar layout (minimal, utilitarian) ---
 const TB = { x: 16, y: 16, btn: 48, gap: 8 };
-const TOOLS = ['square', 'circle', 'triangle', 'face', 'eyes', 'slit', 'clear'];
+const TOOLS = ['square', 'circle', 'triangle', 'face', 'eyes', 'slit', 'rev', 'clear'];
 const SHAPE_TOOLS = ['square', 'circle', 'triangle'];
 
 function setup() {
@@ -506,12 +507,17 @@ function collectAnchors() {
 // each ring outward from an anchor steps one capture further back in time.
 function drawSlitBase(anchors) {
   if (slitCount === 0) { drawVideoCover(); return; }
-  if (!anchors.length) { image(ringFrame(0), 0, 0, width, height); return; }
-  image(ringFrame(slitCount - 1), 0, 0, width, height);   // oldest = background
+  // Normal: center = newest, outward = older (bg oldest). Reversed: center =
+  // oldest, outward = newer (bg newest).
+  const innerAge = slitReverse ? slitCount - 1 : 0;  // frame shown at an anchor center
+  if (!anchors.length) { image(ringFrame(innerAge), 0, 0, width, height); return; }
+  const bgAge = slitReverse ? 0 : slitCount - 1;     // frame beyond the outermost ring
+  image(ringFrame(bgAge), 0, 0, width, height);
   for (let k = slitCount - 2; k >= 0; k--) {
+    const age = slitReverse ? (slitCount - 1 - k) : k;  // k=0 = smallest disk, on top
     push();
     clipToDisks(drawingContext, anchors, (k + 1) * SLIT_RING);
-    image(ringFrame(k), 0, 0, width, height);
+    image(ringFrame(age), 0, 0, width, height);
     pop();
   }
 }
@@ -570,12 +576,12 @@ function drawToolbar() {
   for (let i = 0; i < TOOLS.length; i++) {
     const t = TOOLS[i];
     const b = toolButtonRect(i);
-    const active = (t === currentTool) || (t === 'face' && faceMode) || (t === 'eyes' && eyeMode) || (t === 'slit' && slitMode);
+    const active = (t === currentTool) || (t === 'face' && faceMode) || (t === 'eyes' && eyeMode) || (t === 'slit' && slitMode) || (t === 'rev' && slitReverse);
 
     noStroke();
-    if ((t === 'face' && faceMode) || (t === 'eyes' && eyeMode) || (t === 'slit' && slitMode)) fill(0, 255, 200, 235);
+    if ((t === 'face' && faceMode) || (t === 'eyes' && eyeMode) || (t === 'slit' && slitMode) || (t === 'rev' && slitReverse)) fill(0, 255, 200, 235);
     else fill(0, 0, 0, active ? 235 : 150);
-    if (t !== 'face' && t !== 'eyes' && t !== 'slit' && active) fill(255, 235);
+    if (t !== 'face' && t !== 'eyes' && t !== 'slit' && t !== 'rev' && active) fill(255, 235);
     rect(b.x, b.y, b.w, b.h, 4);
 
     stroke(255, active ? 0 : 90);
@@ -607,6 +613,13 @@ function drawToolbar() {
       ellipse(cx, cy, r * 2, r * 2);
       ellipse(cx, cy, r * 1.15, r * 1.15);
       strokeWeight(2.5); point(cx, cy);
+    } else if (t === 'rev') {
+      noFill();                                  // ring + inward arrow = flipped time
+      ellipse(cx, cy, r * 2, r * 2);
+      strokeWeight(2);
+      line(cx + r, cy, cx + 1, cy);
+      line(cx + 1, cy, cx + 7, cy - 5);
+      line(cx + 1, cy, cx + 7, cy + 5);
     } else { // clear
       line(cx - r, cy - r, cx + r, cy + r);
       line(cx + r, cy - r, cx - r, cy + r);
@@ -622,7 +635,9 @@ function drawHint() {
   let status;
   const fs = faceModelReady ? (faces.length + ' face' + (faces.length === 1 ? '' : 's')) : 'loading model…';
   if (slitMode) {
-    status = 'SLIT — video time radiates from each shape / eye (live near them, delayed farther out).  Detected: ' + fs;
+    status = (slitReverse
+      ? 'SLIT (rev) — oldest frame at each shape / eye, getting newer outward.'
+      : 'SLIT — newest frame at each shape / eye, getting older outward.') + '  Detected: ' + fs;
   } else if (eyeMode) {
     status = 'EYE MODE — a flat square spins around each eye and follows it.  Detected: ' + fs;
   } else if (faceMode) {
@@ -646,8 +661,9 @@ function mousePressed() {
     const t = TOOLS[hit];
     if (t === 'clear') shapes = [];
     else if (t === 'face') faceMode = !faceMode;
-    else if (t === 'eyes') eyeMode = !eyeMode;
+    else if (t === 'eyes') { eyeMode = !eyeMode; eyeSpin = {}; }   // re-randomize sizes/spin
     else if (t === 'slit') slitMode = !slitMode;
+    else if (t === 'rev') slitReverse = !slitReverse;
     else currentTool = t;
     return false;
   }
@@ -686,8 +702,9 @@ function keyPressed() {
   else if (key === '2') currentTool = 'circle';
   else if (key === '3') currentTool = 'triangle';
   else if (key === 'f' || key === 'F') faceMode = !faceMode;
-  else if (key === 'e' || key === 'E') eyeMode = !eyeMode;
+  else if (key === 'e' || key === 'E') { eyeMode = !eyeMode; eyeSpin = {}; }
   else if (key === 't' || key === 'T') slitMode = !slitMode;
+  else if (key === 'r' || key === 'R') slitReverse = !slitReverse;
   else if (key === 'c' || key === 'C') shapes = [];
   else if (key === 'z' || key === 'Z') shapes.pop();
 }
