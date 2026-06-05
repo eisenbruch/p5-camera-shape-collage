@@ -526,16 +526,10 @@ function drawSlitBase(anchors) {
   if (slitCount === 0) { drawVideoCover(); return; }
   if (!anchors.length) { image(ringFrame(slitReverse ? slitCount - 1 : 0), 0, 0, width, height); return; }
 
-  const shapeAnchors = anchors.filter(a => !a.eye);
-  const eyeAnchors   = anchors.filter(a => a.eye);
-
-  // Background beyond every ring. Driven by the shape direction (or normal when
-  // only eyes are present, since eyes are never reversed).
-  const baseReverse = shapeAnchors.length ? slitReverse : false;
-  image(ringFrame(baseReverse ? 0 : slitCount - 1), 0, 0, width, height);
-
-  drawRadialRings(shapeAnchors, slitReverse);  // drawn shapes honor the reverse toggle
-  drawRadialRings(eyeAnchors, false);          // eyes ALWAYS newest at center
+  // Background beyond every ring, then the radial rings — all anchors (drawn
+  // shapes AND eyes) honor the reverse toggle uniformly.
+  image(ringFrame(slitReverse ? 0 : slitCount - 1), 0, 0, width, height);
+  drawRadialRings(anchors, slitReverse);
 }
 
 // Stack frames as growing disks around the anchors: newest in the center, older
