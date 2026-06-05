@@ -54,9 +54,9 @@ const LEFT_EYE  = { outer: 263, inner: 362 };   // eye corner landmark indices (
 const RIGHT_EYE = { outer: 33,  inner: 133 };
 
 // --- Slit-scan (radial time-field) tuning ---
-const SLIT_FRAMES = 10;   // number of time layers (rings) kept in the buffer
+const SLIT_FRAMES = 100;  // number of time layers (rings) kept in the buffer
 const SLIT_STEP   = 3;    // frames between captured layers (temporal spacing)
-const SLIT_RING   = 55;   // px added to the disk radius per older time ring
+const SLIT_RING   = 1;    // px added to the disk radius per older time ring
 const SLIT_RES    = 0.5;  // buffer resolution scale (lower = faster, softer)
 
 // --- Toolbar layout (minimal, utilitarian) ---
