@@ -50,6 +50,7 @@ const MIN_SIZE = 8;
 
 // --- Eye mode tuning + FaceMesh eyelid landmark indices (canonical 468 mesh) ---
 const EYE_SQUARE_SCALE = 1.7;   // square size as a multiple of eye corner-to-corner width
+const EYE_SIZE_VARY    = 0.15;  // +/- random per-eye size variation (0.15 = ±15%)
 const LEFT_EYE  = { outer: 263, inner: 362 };   // eye corner landmark indices (468 mesh)
 const RIGHT_EYE = { outer: 33,  inner: 133 };
 
@@ -397,14 +398,15 @@ function drawEyeSquares() {
       let st = eyeSpin[key];
       if (!st) {
         const dir = Math.random() < 0.5 ? -1 : 1;
-        st = eyeSpin[key] = { angle: 0, speed: dir * (0.004 + Math.random() * 0.016) };
+        const sizeMul = 1 + (Math.random() * 2 - 1) * EYE_SIZE_VARY;  // stable per-eye
+        st = eyeSpin[key] = { angle: 0, speed: dir * (0.004 + Math.random() * 0.016), sizeMul };
       }
       st.angle += st.speed;
       if (!L[e.outer] || !L[e.inner]) continue;   // landmarks missing this frame
 
       const cx = (L[e.outer].x + L[e.inner].x) / 2;
       const cy = (L[e.outer].y + L[e.inner].y) / 2;
-      const w = ptDist(L[e.outer], L[e.inner]) * EYE_SQUARE_SCALE;
+      const w = ptDist(L[e.outer], L[e.inner]) * EYE_SQUARE_SCALE * st.sizeMul;
       drawShapeCutout({ type: 'square', x: cx - w / 2, y: cy - w / 2, w, h: w, angle: st.angle });
     }
   }
