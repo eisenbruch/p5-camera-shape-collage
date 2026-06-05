@@ -48,10 +48,9 @@ let startX, startY, curX, curY;
 const MIN_SIZE = 8;
 
 // --- Eye mode tuning + FaceMesh eyelid landmark indices (canonical 468 mesh) ---
-const EYE_OPEN_EAR = 0.18;      // eye-aspect-ratio above this counts as "open"
 const EYE_SQUARE_SCALE = 1.9;   // square size as a multiple of eye corner-to-corner width
-const LEFT_EYE  = { outer: 263, inner: 362, top1: 386, bottom1: 374, top2: 385, bottom2: 380 };
-const RIGHT_EYE = { outer: 33,  inner: 133, top1: 159, bottom1: 145, top2: 158, bottom2: 153 };
+const LEFT_EYE  = { outer: 263, inner: 362 };   // eye corner landmark indices (468 mesh)
+const RIGHT_EYE = { outer: 33,  inner: 133 };
 
 // --- Toolbar layout (minimal, utilitarian) ---
 const TB = { x: 16, y: 16, btn: 48, gap: 8 };
@@ -378,19 +377,9 @@ function drawAttachedShape(s) {
 // Named ptDist (not dist) to avoid clobbering p5's built-in dist().
 function ptDist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 
-// Eye Aspect Ratio: vertical lid gap / horizontal eye width. ~0.3 open, <0.15 shut.
-function eyeAR(L, e) {
-  if (!L[e.outer] || !L[e.inner] || !L[e.top1] || !L[e.bottom1]) return 0;
-  const v1 = ptDist(L[e.top1], L[e.bottom1]);
-  const v2 = ptDist(L[e.top2], L[e.bottom2]);
-  const h = ptDist(L[e.outer], L[e.inner]);
-  return h < 1e-6 ? 0 : (v1 + v2) / (2 * h);
-}
-
-// For every detected face, draw a flat rotating square around each OPEN eye.
-// The square follows the eye in screen space and spins like a normal cutout;
-// closing the eye (blink) hides that square. Spin continues while hidden so it
-// reappears mid-rotation rather than snapping back to zero.
+// For every detected face, draw a flat rotating square around each eye. The
+// square follows the eye in screen space and spins like a normal cutout; it
+// stays visible whether the eye is open or shut (blinks do not hide it).
 function drawEyeSquares() {
   const eyes = [['L', LEFT_EYE], ['R', RIGHT_EYE]];
   for (let fi = 0; fi < faces.length; fi++) {
@@ -402,8 +391,8 @@ function drawEyeSquares() {
         const dir = Math.random() < 0.5 ? -1 : 1;
         st = eyeSpin[key] = { angle: 0, speed: dir * (0.004 + Math.random() * 0.016) };
       }
-      st.angle += st.speed;                       // keep spinning even while shut
-      if (eyeAR(L, e) < EYE_OPEN_EAR) continue;   // blink -> hide this square
+      st.angle += st.speed;
+      if (!L[e.outer] || !L[e.inner]) continue;   // landmarks missing this frame
 
       const cx = (L[e.outer].x + L[e.inner].x) / 2;
       const cy = (L[e.outer].y + L[e.inner].y) / 2;
