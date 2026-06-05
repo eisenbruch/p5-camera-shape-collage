@@ -42,6 +42,7 @@ let currentTool = 'circle';   // 'square' | 'circle' | 'triangle'
 let faceMode = false;
 let eyeMode = false;          // auto flat rotating squares that follow open eyes
 const eyeSpin = {};           // persistent spin state per face+eye, e.g. eyeSpin['L0']
+let slitMode = false;         // radial slit-scan: video time radiates from shapes/eyes
 let isDrawing = false;
 let startX, startY, curX, curY;
 
@@ -52,9 +53,15 @@ const EYE_SQUARE_SCALE = 1.7;   // square size as a multiple of eye corner-to-co
 const LEFT_EYE  = { outer: 263, inner: 362 };   // eye corner landmark indices (468 mesh)
 const RIGHT_EYE = { outer: 33,  inner: 133 };
 
+// --- Slit-scan (radial time-field) tuning ---
+const SLIT_FRAMES = 10;   // number of time layers (rings) kept in the buffer
+const SLIT_STEP   = 3;    // frames between captured layers (temporal spacing)
+const SLIT_RING   = 55;   // px added to the disk radius per older time ring
+const SLIT_RES    = 0.5;  // buffer resolution scale (lower = faster, softer)
+
 // --- Toolbar layout (minimal, utilitarian) ---
 const TB = { x: 16, y: 16, btn: 48, gap: 8 };
-const TOOLS = ['square', 'circle', 'triangle', 'face', 'eyes', 'clear'];
+const TOOLS = ['square', 'circle', 'triangle', 'face', 'eyes', 'slit', 'clear'];
 const SHAPE_TOOLS = ['square', 'circle', 'triangle'];
 
 function setup() {
@@ -106,8 +113,9 @@ function draw() {
   // Precompute each face's landmarks in screen space once per frame.
   for (const f of faces) f._screen = faceScreen(f);
 
-  // 1. Base live video.
-  drawVideoCover();
+  // 1. Base layer: live video, or the radial slit-scan time-field when on.
+  if (slitMode) { updateSlitRing(); drawSlitBase(collectAnchors()); }
+  else drawVideoCover();
 
   // 2. Advance spin for every shape.
   for (const s of shapes) s.angle += s.speed;
@@ -402,6 +410,110 @@ function drawEyeSquares() {
   }
 }
 
+/* ---------------- slit-scan: radial time-field ---------------- */
+
+// A ring of recent video frames (downscaled). Reconstructed each frame so that
+// pixels near an anchor (a shape / eye center) show the newest frame and pixels
+// farther out show progressively older frames — time radiates outward.
+let slitRing = null, slitHead = 0, slitCount = 0;
+
+function ensureSlitBuffers() {
+  const w = Math.max(2, Math.round(width * SLIT_RES));
+  const h = Math.max(2, Math.round(height * SLIT_RES));
+  if (slitRing && slitRing[0].width === w && slitRing[0].height === h) return;
+  slitRing = [];
+  for (let i = 0; i < SLIT_FRAMES; i++) {
+    const g = createGraphics(w, h);
+    g.pixelDensity(1);
+    slitRing.push(g);
+  }
+  slitHead = 0; slitCount = 0;
+}
+
+// Mirror + cover-fit the current camera frame into a (downscaled) buffer.
+function drawCoverInto(g) {
+  const vw = capture.width, vh = capture.height;
+  const s = Math.max(g.width / vw, g.height / vh);
+  const dw = vw * s, dh = vh * s, dx = (g.width - dw) / 2, dy = (g.height - dh) / 2;
+  g.push();
+  g.clear();
+  g.translate(g.width, 0);
+  g.scale(-1, 1);          // selfie mirror, same as drawVideoCover
+  g.image(capture, dx, dy, dw, dh);
+  g.pop();
+}
+
+// Capture a new frame into the ring every SLIT_STEP frames (temporal spacing).
+function updateSlitRing() {
+  ensureSlitBuffers();
+  if (frameCount % SLIT_STEP !== 0) return;
+  slitHead = (slitHead + 1) % SLIT_FRAMES;
+  drawCoverInto(slitRing[slitHead]);
+  slitCount = Math.min(SLIT_FRAMES, slitCount + 1);
+}
+
+// age 0 = newest stored frame; age k = k captures (k*SLIT_STEP frames) older.
+function ringFrame(k) {
+  if (k >= slitCount) k = slitCount - 1;
+  if (k < 0) return null;
+  return slitRing[(slitHead - k + SLIT_FRAMES) % SLIT_FRAMES];
+}
+
+// Clip the canvas to the UNION of equal-radius disks around every anchor.
+function clipToDisks(ctx, anchors, radius) {
+  ctx.beginPath();
+  for (const a of anchors) {
+    ctx.moveTo(a.x + radius, a.y);
+    ctx.arc(a.x, a.y, radius, 0, Math.PI * 2);
+  }
+  ctx.clip();
+}
+
+// Anchors = centers of all shapes (+ both eyes per face when eye mode is on).
+function collectAnchors() {
+  const a = [];
+  for (const s of shapes) {
+    if (s.attached) {
+      if (s.lastPoly && s.lastPoly.length) {
+        let cx = 0, cy = 0;
+        for (const p of s.lastPoly) { cx += p.x; cy += p.y; }
+        a.push({ x: cx / s.lastPoly.length, y: cy / s.lastPoly.length });
+      } else if (s.facePos) {
+        a.push({ x: s.facePos.x, y: s.facePos.y });
+      }
+    } else {
+      const c = shapeCenter(s);
+      a.push({ x: c.cx, y: c.cy });
+    }
+  }
+  if (eyeMode) {
+    for (const f of faces) {
+      const L = f._screen || faceScreen(f);
+      for (const e of [LEFT_EYE, RIGHT_EYE]) {
+        if (L[e.outer] && L[e.inner]) {
+          a.push({ x: (L[e.outer].x + L[e.inner].x) / 2, y: (L[e.outer].y + L[e.inner].y) / 2 });
+        }
+      }
+    }
+  }
+  return a;
+}
+
+// Draw the radial time-field. Oldest frame fills the screen; progressively
+// newer frames are stacked on top within growing disks around the anchors, so
+// each ring outward from an anchor steps one capture further back in time.
+function drawSlitBase(anchors) {
+  if (slitCount === 0) { drawVideoCover(); return; }
+  if (!anchors.length) { image(ringFrame(0), 0, 0, width, height); return; }
+  image(ringFrame(slitCount - 1), 0, 0, width, height);   // oldest = background
+  for (let k = slitCount - 2; k >= 0; k--) {
+    push();
+    clipToDisks(drawingContext, anchors, (k + 1) * SLIT_RING);
+    image(ringFrame(k), 0, 0, width, height);
+    pop();
+  }
+}
+
 /* ---------------- face detection helpers ---------------- */
 
 // True if point p lies inside any triangle of the face mesh.
@@ -456,12 +568,12 @@ function drawToolbar() {
   for (let i = 0; i < TOOLS.length; i++) {
     const t = TOOLS[i];
     const b = toolButtonRect(i);
-    const active = (t === currentTool) || (t === 'face' && faceMode) || (t === 'eyes' && eyeMode);
+    const active = (t === currentTool) || (t === 'face' && faceMode) || (t === 'eyes' && eyeMode) || (t === 'slit' && slitMode);
 
     noStroke();
-    if ((t === 'face' && faceMode) || (t === 'eyes' && eyeMode)) fill(0, 255, 200, 235);
+    if ((t === 'face' && faceMode) || (t === 'eyes' && eyeMode) || (t === 'slit' && slitMode)) fill(0, 255, 200, 235);
     else fill(0, 0, 0, active ? 235 : 150);
-    if (t !== 'face' && t !== 'eyes' && active) fill(255, 235);
+    if (t !== 'face' && t !== 'eyes' && t !== 'slit' && active) fill(255, 235);
     rect(b.x, b.y, b.w, b.h, 4);
 
     stroke(255, active ? 0 : 90);
@@ -488,6 +600,11 @@ function drawToolbar() {
     } else if (t === 'eyes') {
       rectMode(CENTER); noFill(); rect(cx, cy, r * 2, r * 1.5, 2); rectMode(CORNER);
       strokeWeight(2.5); point(cx, cy);          // pupil inside a little frame
+    } else if (t === 'slit') {
+      noFill();                                  // concentric time rings
+      ellipse(cx, cy, r * 2, r * 2);
+      ellipse(cx, cy, r * 1.15, r * 1.15);
+      strokeWeight(2.5); point(cx, cy);
     } else { // clear
       line(cx - r, cy - r, cx + r, cy + r);
       line(cx + r, cy - r, cx - r, cy + r);
@@ -502,12 +619,14 @@ function drawHint() {
   textAlign(LEFT, BOTTOM);
   let status;
   const fs = faceModelReady ? (faces.length + ' face' + (faces.length === 1 ? '' : 's')) : 'loading model…';
-  if (eyeMode) {
-    status = 'EYE MODE — a flat square spins around each open eye and follows it; blink to hide.  Detected: ' + fs;
+  if (slitMode) {
+    status = 'SLIT — video time radiates from each shape / eye (live near them, delayed farther out).  Detected: ' + fs;
+  } else if (eyeMode) {
+    status = 'EYE MODE — a flat square spins around each eye and follows it.  Detected: ' + fs;
   } else if (faceMode) {
     status = 'FACE MODE — draw over a face to stick a warping cutout on it.  Detected: ' + fs;
   } else {
-    status = 'Pick a shape, then drag to cut a rotating window.  Toggle face / eyes for auto modes.';
+    status = 'Pick a shape, then drag to cut a rotating window.  Toggle face / eyes / slit for auto modes.';
   }
   text(status + '   Shapes: ' + shapes.length, TB.x, height - 14);
 }
@@ -526,6 +645,7 @@ function mousePressed() {
     if (t === 'clear') shapes = [];
     else if (t === 'face') faceMode = !faceMode;
     else if (t === 'eyes') eyeMode = !eyeMode;
+    else if (t === 'slit') slitMode = !slitMode;
     else currentTool = t;
     return false;
   }
@@ -565,6 +685,7 @@ function keyPressed() {
   else if (key === '3') currentTool = 'triangle';
   else if (key === 'f' || key === 'F') faceMode = !faceMode;
   else if (key === 'e' || key === 'E') eyeMode = !eyeMode;
+  else if (key === 't' || key === 'T') slitMode = !slitMode;
   else if (key === 'c' || key === 'C') shapes = [];
   else if (key === 'z' || key === 'Z') shapes.pop();
 }
