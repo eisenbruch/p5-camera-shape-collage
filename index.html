@@ -44,6 +44,7 @@ let eyeMode = false;          // auto flat rotating squares that follow open eye
 let eyeSpin = {};             // per face+eye spin/size state; reset when eye mode toggles
 let slitMode = false;         // radial slit-scan: video time radiates from shapes/eyes
 let slitReverse = false;      // flip radial time direction (oldest at center, newest outward)
+let pixelMode = false;        // pixel-sort streaks (a cross) emanating from each shape/eye
 let isDrawing = false;
 let startX, startY, curX, curY;
 
@@ -61,9 +62,14 @@ const SLIT_STEP   = 3;    // frames between captured layers (temporal spacing)
 const SLIT_RING   = 5;    // px added to the disk radius per older time ring
 const SLIT_RES    = 0.5;  // buffer resolution scale (lower = faster, softer)
 
+// --- Pixel-sort (streaks emanating from shapes/eyes) tuning ---
+const PIXEL_RES = 0.5;    // pixel-sort buffer resolution (lower = faster)
+const PIX_SPAN  = 2.5;    // streak length as a multiple of a shape's size
+const PIX_BAND  = 0.55;   // streak thickness as a multiple of a shape's size
+
 // --- Toolbar layout (minimal, utilitarian) ---
 const TB = { x: 16, y: 16, btn: 48, gap: 8 };
-const TOOLS = ['square', 'circle', 'triangle', 'face', 'eyes', 'slit', 'rev', 'clear'];
+const TOOLS = ['square', 'circle', 'triangle', 'face', 'eyes', 'slit', 'rev', 'sort', 'clear'];
 const SHAPE_TOOLS = ['square', 'circle', 'triangle'];
 
 function setup() {
@@ -115,9 +121,11 @@ function draw() {
   // Precompute each face's landmarks in screen space once per frame.
   for (const f of faces) f._screen = faceScreen(f);
 
-  // 1. Base layer: live video, or the radial slit-scan time-field when on.
-  if (slitMode) { updateSlitRing(); drawSlitBase(collectAnchors()); }
+  // 1. Base layer + per-anchor effects (slit time-field, pixel-sort streaks).
+  const fxAnchors = (slitMode || pixelMode) ? collectAnchors() : null;
+  if (slitMode) { updateSlitRing(); drawSlitBase(fxAnchors); }
   else drawVideoCover();
+  if (pixelMode) drawPixelSort(fxAnchors);
 
   // 2. Advance spin for every shape.
   for (const s of shapes) s.angle += s.speed;
@@ -478,15 +486,19 @@ function collectAnchors() {
   for (const s of shapes) {
     if (s.attached) {
       if (s.lastPoly && s.lastPoly.length) {
-        let cx = 0, cy = 0;
-        for (const p of s.lastPoly) { cx += p.x; cy += p.y; }
-        a.push({ x: cx / s.lastPoly.length, y: cy / s.lastPoly.length });
+        let cx = 0, cy = 0, minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
+        for (const p of s.lastPoly) {
+          cx += p.x; cy += p.y;
+          if (p.x < minx) minx = p.x; if (p.x > maxx) maxx = p.x;
+          if (p.y < miny) miny = p.y; if (p.y > maxy) maxy = p.y;
+        }
+        a.push({ x: cx / s.lastPoly.length, y: cy / s.lastPoly.length, r: Math.max(maxx - minx, maxy - miny), eye: false });
       } else if (s.facePos) {
-        a.push({ x: s.facePos.x, y: s.facePos.y });
+        a.push({ x: s.facePos.x, y: s.facePos.y, r: 80, eye: false });
       }
     } else {
       const c = shapeCenter(s);
-      a.push({ x: c.cx, y: c.cy });
+      a.push({ x: c.cx, y: c.cy, r: Math.max(s.w, s.h), eye: false });
     }
   }
   if (eyeMode) {
@@ -494,7 +506,12 @@ function collectAnchors() {
       const L = f._screen || faceScreen(f);
       for (const e of [LEFT_EYE, RIGHT_EYE]) {
         if (L[e.outer] && L[e.inner]) {
-          a.push({ x: (L[e.outer].x + L[e.inner].x) / 2, y: (L[e.outer].y + L[e.inner].y) / 2 });
+          a.push({
+            x: (L[e.outer].x + L[e.inner].x) / 2,
+            y: (L[e.outer].y + L[e.inner].y) / 2,
+            r: ptDist(L[e.outer], L[e.inner]) * EYE_SQUARE_SCALE,
+            eye: true
+          });
         }
       }
     }
@@ -507,19 +524,107 @@ function collectAnchors() {
 // each ring outward from an anchor steps one capture further back in time.
 function drawSlitBase(anchors) {
   if (slitCount === 0) { drawVideoCover(); return; }
-  // Normal: center = newest, outward = older (bg oldest). Reversed: center =
-  // oldest, outward = newer (bg newest).
-  const innerAge = slitReverse ? slitCount - 1 : 0;  // frame shown at an anchor center
-  if (!anchors.length) { image(ringFrame(innerAge), 0, 0, width, height); return; }
-  const bgAge = slitReverse ? 0 : slitCount - 1;     // frame beyond the outermost ring
-  image(ringFrame(bgAge), 0, 0, width, height);
-  for (let k = slitCount - 2; k >= 0; k--) {
-    const age = slitReverse ? (slitCount - 1 - k) : k;  // k=0 = smallest disk, on top
+  if (!anchors.length) { image(ringFrame(slitReverse ? slitCount - 1 : 0), 0, 0, width, height); return; }
+
+  const shapeAnchors = anchors.filter(a => !a.eye);
+  const eyeAnchors   = anchors.filter(a => a.eye);
+
+  // Background beyond every ring. Driven by the shape direction (or normal when
+  // only eyes are present, since eyes are never reversed).
+  const baseReverse = shapeAnchors.length ? slitReverse : false;
+  image(ringFrame(baseReverse ? 0 : slitCount - 1), 0, 0, width, height);
+
+  drawRadialRings(shapeAnchors, slitReverse);  // drawn shapes honor the reverse toggle
+  drawRadialRings(eyeAnchors, false);          // eyes ALWAYS newest at center
+}
+
+// Stack frames as growing disks around the anchors: newest in the center, older
+// outward (or the opposite when reverse is true). k=0 is the smallest disk, on top.
+function drawRadialRings(anchors, reverse) {
+  if (!anchors.length) return;
+  for (let k = slitCount - 1; k >= 0; k--) {
+    const age = reverse ? (slitCount - 1 - k) : k;
     push();
     clipToDisks(drawingContext, anchors, (k + 1) * SLIT_RING);
     image(ringFrame(age), 0, 0, width, height);
     pop();
   }
+}
+
+/* ---------------- pixel sort: streaks from shapes/eyes ---------------- */
+
+let pixBuf = null;   // downscaled work buffer for the pixel sort
+
+function ensurePixBuf() {
+  const w = Math.max(2, Math.round(width * PIXEL_RES));
+  const h = Math.max(2, Math.round(height * PIXEL_RES));
+  if (pixBuf && pixBuf.width === w && pixBuf.height === h) return;
+  pixBuf = createGraphics(w, h);
+  pixBuf.pixelDensity(1);
+}
+
+// Sort a run of pixels (given as RGBA base offsets) by brightness, in place.
+function sortSpan(px, idxs) {
+  const arr = idxs.map(i => [px[i] + px[i + 1] + px[i + 2], px[i], px[i + 1], px[i + 2], px[i + 3]]);
+  arr.sort((a, b) => a[0] - b[0]);
+  for (let n = 0; n < idxs.length; n++) {
+    const i = idxs[n], t = arr[n];
+    px[i] = t[1]; px[i + 1] = t[2]; px[i + 2] = t[3]; px[i + 3] = t[4];
+  }
+}
+
+// Clip the canvas to the union of each anchor's horizontal + vertical streak
+// rectangles, so sorted pixels only appear in those crosses (never the whole frame).
+function clipToStreaks(ctx, anchors) {
+  ctx.beginPath();
+  for (const a of anchors) {
+    const sz = Math.max(8, a.r);
+    const span = sz * PIX_SPAN, band = sz * PIX_BAND;
+    ctx.rect(a.x - span / 2, a.y - band / 2, span, band);   // horizontal streak
+    ctx.rect(a.x - band / 2, a.y - span / 2, band, span);   // vertical streak
+  }
+  ctx.clip();
+}
+
+// Build a per-anchor cross of brightness-sorted streaks from the current base,
+// then composite it back only within those crosses. Recomputed every frame, so
+// the streaks track the shapes/eyes and shimmer as the video changes.
+function drawPixelSort(anchors) {
+  if (!anchors || !anchors.length) return;
+  ensurePixBuf();
+  const sc = PIXEL_RES, W = pixBuf.width, H = pixBuf.height;
+  pixBuf.clear();
+  pixBuf.drawingContext.drawImage(drawingContext.canvas, 0, 0, W, H);
+  pixBuf.loadPixels();
+  const px = pixBuf.pixels;
+
+  for (const a of anchors) {
+    const ax = a.x * sc, ay = a.y * sc, sz = Math.max(4, a.r * sc);
+    const span = sz * PIX_SPAN, band = sz * PIX_BAND;
+
+    // horizontal streak: sort each row across the span
+    let x0 = Math.max(0, Math.round(ax - span / 2)), x1 = Math.min(W - 1, Math.round(ax + span / 2));
+    let y0 = Math.max(0, Math.round(ay - band / 2)), y1 = Math.min(H - 1, Math.round(ay + band / 2));
+    for (let y = y0; y <= y1; y++) {
+      const idxs = [];
+      for (let x = x0; x <= x1; x++) idxs.push(4 * (y * W + x));
+      sortSpan(px, idxs);
+    }
+    // vertical streak: sort each column down the span
+    x0 = Math.max(0, Math.round(ax - band / 2)); x1 = Math.min(W - 1, Math.round(ax + band / 2));
+    y0 = Math.max(0, Math.round(ay - span / 2)); y1 = Math.min(H - 1, Math.round(ay + span / 2));
+    for (let x = x0; x <= x1; x++) {
+      const idxs = [];
+      for (let y = y0; y <= y1; y++) idxs.push(4 * (y * W + x));
+      sortSpan(px, idxs);
+    }
+  }
+  pixBuf.updatePixels();
+
+  push();
+  clipToStreaks(drawingContext, anchors);
+  image(pixBuf, 0, 0, width, height);
+  pop();
 }
 
 /* ---------------- face detection helpers ---------------- */
@@ -576,12 +681,12 @@ function drawToolbar() {
   for (let i = 0; i < TOOLS.length; i++) {
     const t = TOOLS[i];
     const b = toolButtonRect(i);
-    const active = (t === currentTool) || (t === 'face' && faceMode) || (t === 'eyes' && eyeMode) || (t === 'slit' && slitMode) || (t === 'rev' && slitReverse);
+    const active = (t === currentTool) || (t === 'face' && faceMode) || (t === 'eyes' && eyeMode) || (t === 'slit' && slitMode) || (t === 'rev' && slitReverse) || (t === 'sort' && pixelMode);
 
     noStroke();
-    if ((t === 'face' && faceMode) || (t === 'eyes' && eyeMode) || (t === 'slit' && slitMode) || (t === 'rev' && slitReverse)) fill(0, 255, 200, 235);
+    if ((t === 'face' && faceMode) || (t === 'eyes' && eyeMode) || (t === 'slit' && slitMode) || (t === 'rev' && slitReverse) || (t === 'sort' && pixelMode)) fill(0, 255, 200, 235);
     else fill(0, 0, 0, active ? 235 : 150);
-    if (t !== 'face' && t !== 'eyes' && t !== 'slit' && t !== 'rev' && active) fill(255, 235);
+    if (t !== 'face' && t !== 'eyes' && t !== 'slit' && t !== 'rev' && t !== 'sort' && active) fill(255, 235);
     rect(b.x, b.y, b.w, b.h, 4);
 
     stroke(255, active ? 0 : 90);
@@ -620,6 +725,11 @@ function drawToolbar() {
       line(cx + r, cy, cx + 1, cy);
       line(cx + 1, cy, cx + 7, cy - 5);
       line(cx + 1, cy, cx + 7, cy + 5);
+    } else if (t === 'sort') {
+      strokeWeight(2);                           // a cross of streaks
+      line(cx, cy - r, cx, cy + r);
+      line(cx - r, cy, cx + r, cy);
+      strokeWeight(4); point(cx, cy);
     } else { // clear
       line(cx - r, cy - r, cx + r, cy + r);
       line(cx + r, cy - r, cx - r, cy + r);
@@ -664,6 +774,7 @@ function mousePressed() {
     else if (t === 'eyes') { eyeMode = !eyeMode; eyeSpin = {}; }   // re-randomize sizes/spin
     else if (t === 'slit') slitMode = !slitMode;
     else if (t === 'rev') slitReverse = !slitReverse;
+    else if (t === 'sort') pixelMode = !pixelMode;
     else currentTool = t;
     return false;
   }
@@ -705,6 +816,7 @@ function keyPressed() {
   else if (key === 'e' || key === 'E') { eyeMode = !eyeMode; eyeSpin = {}; }
   else if (key === 't' || key === 'T') slitMode = !slitMode;
   else if (key === 'r' || key === 'R') slitReverse = !slitReverse;
+  else if (key === 'p' || key === 'P') pixelMode = !pixelMode;
   else if (key === 'c' || key === 'C') shapes = [];
   else if (key === 'z' || key === 'Z') shapes.pop();
 }
